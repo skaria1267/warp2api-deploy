@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
 
 COPY . .
 
+RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -e .
 
 RUN python precompile_protos.py || echo "Protobuf precompilation skipped"
