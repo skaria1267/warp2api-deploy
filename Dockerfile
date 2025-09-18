@@ -13,9 +13,6 @@ ENV SWITCH_INTERVAL="3"
 ENV PROXY_MAX_RETRIES="5"
 ENV PROXY_RETRY_DELAY="0.5"
 
-# JWT token (可选)
-ENV WARP_JWT=""
-
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
@@ -31,5 +28,4 @@ RUN python precompile_protos.py || echo "Protobuf precompilation skipped"
 
 EXPOSE 28888 28889
 
-# 使用Python启动脚本
-CMD ["python", "-u", "start_with_full_proxy.py"]
+CMD ["python", "-u", "start_with_patched_auth.py"]
