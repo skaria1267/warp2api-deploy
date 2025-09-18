@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-import requests
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
@@ -41,14 +41,13 @@ def health_check():
 def list_models():
     """OpenAI-compatible model listing. Forwards to bridge, with local fallback."""
     try:
-        # 使用环境变量中的BRIDGE_BASE_URL
+        import requests
         resp = requests.get(f"{BRIDGE_BASE_URL}/v1/models", timeout=10.0)
         if resp.status_code != 200:
             raise HTTPException(resp.status_code, f"bridge_error: {resp.text}")
         return resp.json()
     except Exception as e:
         try:
-            # Local fallback: construct models directly if bridge is unreachable
             from warp2protobuf.config.models import get_all_unique_models  # type: ignore
             models = get_all_unique_models()
             return {"object": "list", "data": models}
@@ -70,16 +69,13 @@ async def chat_completions(req: ChatCompletionsRequest, request: Request = None)
     if not req.messages:
         raise HTTPException(400, "messages 不能为空")
 
-    # 1) 打印接收到的 Chat Completions 原始请求体
     try:
         logger.debug("[OpenAI Compat] 接收到的 Chat Completions 请求体(原始): %s", json.dumps(req.dict(), ensure_ascii=False))
     except Exception:
         logger.debug("[OpenAI Compat] 接收到的 Chat Completions 请求体(原始) 序列化失败")
 
-    # 整理消息
     history: List[ChatMessage] = reorder_messages_for_anthropic(list(req.messages))
 
-    # 2) 打印整理后的请求体（post-reorder）
     try:
         logger.info("[OpenAI Compat] 整理后的请求体(post-reorder): %s", json.dumps({
             **req.dict(),
@@ -114,7 +110,6 @@ async def chat_completions(req: ChatCompletionsRequest, request: Request = None)
     }
 
     packet.setdefault("settings", {}).setdefault("model_config", {})
-    # 使用环境变量中的默认模型或硬编码的默认值
     default_model = os.getenv("DEFAULT_MODEL", "claude-4.1-opus")
     packet["settings"]["model_config"]["base"] = req.model or packet["settings"]["model_config"].get("base") or default_model
 
@@ -136,7 +131,6 @@ async def chat_completions(req: ChatCompletionsRequest, request: Request = None)
         if mcp_tools:
             packet.setdefault("mcp_context", {}).setdefault("tools", []).extend(mcp_tools)
 
-    # 3) 打印转换成 protobuf JSON 的请求体（发送到 bridge 的数据包）
     logger.info("[OpenAI Compat] 📤 处理Chat请求: %s", req.model)
 
     created_ts = int(time.time())
@@ -149,26 +143,31 @@ async def chat_completions(req: ChatCompletionsRequest, request: Request = None)
                 yield chunk
         return StreamingResponse(_agen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
 
-    def _post_once() -> requests.Response:
-        return requests.post(
-            f"{BRIDGE_BASE_URL}/api/warp/send_stream",
-            json={"json_data": packet, "message_type": "warp.multi_agent.v1.Request"},
-            timeout=(5.0, 180.0),
-        )
+    async def _post_once_async() -> httpx.Response:
+        async with httpx.AsyncClient(timeout=(5.0, 180.0)) as client:
+            return await client.post(
+                f"{BRIDGE_BASE_URL}/api/warp/send_stream",
+                json={"json_data": packet, "message_type": "warp.multi_agent.v1.Request"},
+            )
 
     try:
-        resp = _post_once()
+        resp = await _post_once_async()
         if resp.status_code == 429:
+            logger.warning("[OpenAI Compat] 收到 429 (配额用尽)。尝试通过代理刷新匿名Token...")
             try:
-                r = requests.post(f"{BRIDGE_BASE_URL}/api/auth/refresh", timeout=10.0)
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    r = await client.post(f"{BRIDGE_BASE_URL}/api/auth/refresh")
                 logger.info("[OpenAI Compat] 🔄 JWT刷新后重试，状态码: %s", getattr(r, 'status_code', 'N/A'))
             except Exception as _e:
                 logger.warning("[OpenAI Compat] JWT刷新失败: %s", _e)
-            resp = _post_once()
+
+            resp = await _post_once_async()
+
         if resp.status_code != 200:
             raise HTTPException(resp.status_code, f"bridge_error: {resp.text}")
         bridge_resp = resp.json()
     except Exception as e:
+        logger.error(f"[OpenAI Compat] 请求bridge时发生未知异常: {e}", exc_info=True)
         raise HTTPException(502, f"bridge_unreachable: {e}")
 
     try:
