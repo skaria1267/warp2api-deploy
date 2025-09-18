@@ -28,4 +28,4 @@ RUN python precompile_protos.py || echo "Protobuf precompilation skipped"
 
 EXPOSE 28888 28889
 
-CMD ["python", "-u", "start_with_patched_auth.py"]
+CMD ["python", "-u", "start_simple.py"]
