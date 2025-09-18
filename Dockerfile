@@ -10,8 +10,6 @@ ENV HOST=0.0.0.0
 ENV PROXY_POOL_URL=""
 ENV FORCE_PROXY="false"
 ENV SWITCH_INTERVAL="3"
-ENV PROXY_MAX_RETRIES="5"
-ENV PROXY_RETRY_DELAY="0.5"
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -22,10 +20,9 @@ COPY . .
 
 RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -e .
-RUN pip install --no-cache-dir httpx requests
 
 RUN python precompile_protos.py || echo "Protobuf precompilation skipped"
 
 EXPOSE 28888 28889
 
-CMD ["python", "-u", "start_simple.py"]
+CMD ["python", "-u", "start_final.py"]
